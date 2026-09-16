@@ -7,24 +7,14 @@
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= render 'layouts/shim' %>
   </head>
 
   <body>
-<body>
-  <header class="navbar navbar-fixed-top navbar-inverse">
+    <%= render 'layouts/header' %>
     <div class="container">
-      <%= link_to "sample app", '#', id: "logo" %>
-        <nav>
-          <ul class="nav navbar-nav navbar-right">
-            <li><%= link_to "Home", static_pages_home_path %></li>
-            <li><%= link_to "Help", static_pages_help_path %></li>
-            <li><%= link_to "Log in", static_pages_about_path %></li>
-          </ul>
-        </nav>
-    </div>
-  </header>
-    <div class="container">
-     <%= yield %>
+      <%= yield %>
+      <%= render 'layouts/footer' %>
     </div>
   </body>
 </html>
