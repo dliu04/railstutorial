@@ -1,0 +1,90 @@
+name: Report Render Deploy Status
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sample_app/**"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab, for testing
+
+# Default GITHUB_TOKEN is read-only for Deployments unless explicitly widened here.
+permissions:
+  deployments: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_WEB_SERVICE_ID: ${{ secrets.RENDER_WEB_SERVICE_ID }}
+    steps:
+      # No actions/checkout - pure API calls, no repo content needed.
+      - name: Create GitHub deployment for this commit
+        id: deployment
+        run: |
+          set -euo pipefail
+          # required_contexts must be explicit empty array - otherwise the Deployments
+          # API blocks creation (409) until unrelated CI checks pass first.
+          id=$(jq -n --arg ref "${{ github.sha }}" \
+                '{ref: $ref, environment: "production", required_contexts: []}' \
+              | gh api "repos/${{ github.repository }}/deployments" --input - --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      # Render's auto-deploy is a separate race - poll for a deploy matching this
+      # exact commit rather than grabbing the latest (could be stale).
+      - name: Find the matching Render deploy
+        id: find
+        run: |
+          set -euo pipefail
+          deploy_id=""
+          for i in $(seq 1 30); do
+            deploy_id=$(curl -sS "https://api.render.com/v1/services/$RENDER_WEB_SERVICE_ID/deploys?limit=20" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              | jq -r '.[] | select(.deploy.commit.id == "${{ github.sha }}") | .deploy.id' | head -n1)
+            [ -n "$deploy_id" ] && break
+            echo "no matching Render deploy yet, waiting... (${i}/30)"
+            sleep 10
+          done
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for that deploy to finish
+        id: wait
+        run: |
+          set -euo pipefail
+          deploy_id="${{ steps.find.outputs.deploy_id }}"
+          if [ -z "$deploy_id" ]; then
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+            echo "description=Render never started a deploy for this commit within 5 minutes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status=""
+          for i in $(seq 1 60); do
+            status=$(curl -sS "https://api.render.com/v1/services/$RENDER_WEB_SERVICE_ID/deploys/$deploy_id" \
+              -H "Authorization: Bearer $RENDER_API_KEY" | jq -r '.status')
+            case "$status" in
+              live)
+                echo "state=success" >> "$GITHUB_OUTPUT"
+                echo "description=Deployed successfully" >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+              build_failed|update_failed|canceled|deactivated)
+                echo "state=failure" >> "$GITHUB_OUTPUT"
+                echo "description=Render deploy ended with status: $status" >> "$GITHUB_OUTPUT"
+                exit 0 ;;
+            esac
+            echo "deploy $deploy_id status=$status, waiting... (${i}/60)"
+            sleep 10
+          done
+          echo "state=failure" >> "$GITHUB_OUTPUT"
+          echo "description=Timed out after 10 minutes waiting for the deploy (last status: $status)" >> "$GITHUB_OUTPUT"
+
+      # Service URL is static across deploys - stored as a repo variable instead of
+      # fetched from the API each push.
+      - name: Report final status back to GitHub
+        if: always()
+        run: |
+          gh api "repos/${{ github.repository }}/deployments/${{ steps.deployment.outputs.id }}/statuses" \
+            -f state="${{ steps.wait.outputs.state }}" \
+            -f environment_url="${{ vars.RENDER_SERVICE_URL }}" \
+            -f description="${{ steps.wait.outputs.description }}" \
+            --silent
