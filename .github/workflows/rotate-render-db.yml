@@ -1,0 +1,46 @@
+name: Rotate Render Postgres
+
+on:
+  schedule:
+    # Twice a month, well inside the 30-day free-tier expiry.
+    - cron: "0 0 1,15 * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab, for testing
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    # Monorepo checkout is at repo root; run steps from sample_app.
+    defaults:
+      run:
+        working-directory: sample_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql client tools
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client
+
+      # Cache keys are write-once, so restore via prefix match against the last run's
+      # save, then always save under a fresh key. Carries backups/ forward across runs.
+      # `path` is relative to repo root regardless of working-directory above.
+      - name: Restore backups from previous run
+        uses: actions/cache/restore@v4
+        with:
+          path: sample_app/backups
+          key: render-db-backups-${{ github.run_id }}
+          restore-keys: |
+            render-db-backups-
+
+      - name: Run rotation
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_OWNER_ID: ${{ secrets.RENDER_OWNER_ID }}
+          RENDER_DB_NAME: ${{ secrets.RENDER_DB_NAME }}
+          RENDER_WEB_SERVICE_ID: ${{ secrets.RENDER_WEB_SERVICE_ID }}
+        run: ./bin/rotate_render_db.sh
+
+      - name: Save backups for next run
+        if: always() # keep whatever state exists even if the rotation step failed partway
+        uses: actions/cache/save@v4
+        with:
+          path: sample_app/backups
+          key: render-db-backups-${{ github.run_id }}

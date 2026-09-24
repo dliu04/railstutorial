@@ -33,3 +33,6 @@
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+# Ignore database dumps produced by bin/rotate_render_db.sh.
+/backups
+
